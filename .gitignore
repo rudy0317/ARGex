@@ -1,0 +1,31 @@
+# Python bytecode & caches
+__pycache__/
+*.py[cod]
+*$py.class
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# PyInstaller / Packaging artifacts
+build/
+dist/
+*.spec
+tesseract/
+Tesseract-OCR/
+
+# Field photo datasets & generated outputs (do not commit raw/output photos)
+Folder Aset/
+foto_renamed/
+foto_hasil/
+Testing/
+Report/*.xlsx
+
+# Excel temporary lock files & OS junk
+~$*.xlsx
+.DS_Store
+Thumbs.db

@@ -1,0 +1,135 @@
+{
+  "paths": {
+    "input_dirs": [
+      "./Folder Aset"
+    ],
+    "output_dir": "./foto_renamed",
+    "template_excel": "./Template Reporting/SPN-CMP-NA-P02-F02 - Network Assurance Acceptence Test Form FTTH_ai.xlsx",
+    "output_excel": "./Report/Report_FTTH_Auto.xlsx",
+    "tesseract_cmd": "C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
+  },
+  "active_targets": [
+    "DP",
+    "Input DP",
+    "Output DP",
+    "Basetray DP",
+    "Loop DP",
+    "Structure"
+  ],
+  "available_variables": [
+    "Output RK",
+    "Input DP",
+    "Output DP",
+    "Loop DP",
+    "Basetray DP",
+    "DP",
+    "Structure"
+  ],
+  "location_regex": "(?:^|[^a-zA-Z0-9])([a-zA-Z]{2,5})[\\s\\.\\-~_|()\\[\\]]{0,6}([0-9OogGIlSB]{4,8})(?=[^a-zA-Z0-9]|$)",
+  "stencil_char_map": {
+    "O": "0",
+    "o": "0",
+    "G": "6",
+    "g": "6",
+    "I": "1",
+    "l": "1",
+    "S": "5",
+    "B": "8"
+  },
+  "blacklist_prefixes": [
+    "IMG", "IMAGE", "VID", "VIDEO", "LINE", "ALBUM",
+    "PHOTO", "FRAME", "DSC", "WP", "INDEX", "NUMBER",
+    "SPEED", "KOTA", "JALAN", "UTARA", "TIMUR", "BARAT"
+  ],
+  "detectors": {
+    "DP": {
+      "description": "Box DP hitam tampak depan dengan teks sablon putih di tengah (Nomor 1)",
+      "roi": {
+        "y_start": 0.20,
+        "y_end": 0.65,
+        "x_start": 0.25,
+        "x_end": 0.75
+      },
+      "hsv_gates": {
+        "black_box": {
+          "s_max": 70,
+          "v_min": 15,
+          "v_max": 125,
+          "min_ratio": 0.45
+        },
+        "white_stencil": {
+          "s_max": 60,
+          "v_min": 170,
+          "min_ratio": 0.01,
+          "max_ratio": 0.25
+        },
+        "exclude_opm_yellow": {
+          "h_min": 14,
+          "h_max": 32,
+          "s_min": 100,
+          "v_min": 90,
+          "max_ratio": 0.05
+        }
+      },
+      "ocr_thresholds": [170, 150],
+      "require_ocr_match": true
+    },
+    "OPM": {
+      "description": "Alat ukur Optical Power Meter (Input DP < 10 dBm, Output DP >= 10 dBm)",
+      "roi": {
+        "y_start": 0.15,
+        "y_end": 0.96,
+        "x_start": 0.10,
+        "x_end": 0.90
+      },
+      "hsv_yellow_body": {
+        "h_min": 16,
+        "h_max": 32,
+        "s_min": 125,
+        "v_min": 100,
+        "min_ratio": 0.055
+      },
+      "hsv_unlit_lcd": {
+        "h_min": 32,
+        "h_max": 68,
+        "s_min": 18,
+        "s_max": 75,
+        "v_min": 95,
+        "v_max": 155
+      },
+      "sop_dbm_threshold": 10.0
+    },
+    "Basetray DP": {
+      "description": "Tray utama putih menghadap depan dengan deretan konektor SC biru (Nomor 6)",
+      "roi": {
+        "y_start": 0.15,
+        "y_end": 0.75,
+        "x_start": 0.10,
+        "x_end": 0.90
+      },
+      "min_blue_sc_ratio": 0.042,
+      "min_white_tray_ratio": 0.35,
+      "max_left_dark_ratio": 0.60,
+      "max_left_orange_ratio": 0.005
+    },
+    "Loop DP": {
+      "description": "Bagian dalam DP: sisi kiri kompartemen hitam dengan gulungan loop tube biru/oranye & sisi kanan tray putih (Nomor 3)",
+      "roi": {
+        "y_start": 0.15,
+        "y_end": 0.75,
+        "x_start": 0.10,
+        "x_end": 0.90
+      },
+      "min_left_dark_ratio": 0.50,
+      "min_right_white_ratio": 0.45,
+      "min_blue_tube_ratio": 0.016,
+      "min_orange_tube_ratio": 0.008
+    },
+    "Structure": {
+      "description": "Foto tiang utuh vertikal dari jalan ke atas (Nomor 8)",
+      "min_top_outdoor_ratio": 0.45,
+      "max_mid_low_bright_ratio": 0.20,
+      "min_vertical_edge_ratio": 0.12
+    }
+  }
+}
