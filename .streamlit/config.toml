@@ -8,7 +8,7 @@ font = "sans serif"
 
 
 [client]
-toolbarMode = "viewer"
+toolbarMode = "minimal"
 
 [server]
 enableXsrfProtection = true

@@ -438,6 +438,26 @@ slot_cells_html = "".join(
 )
 st.markdown(f'<div class="slot-strip">{slot_cells_html}</div>', unsafe_allow_html=True)
 
+st.markdown(
+    """
+    <style>
+    [data-testid="stToolbar"], [data-testid="stToolbarActions"], [data-testid="stDecoration"],
+    #MainMenu, footer { visibility: hidden !important; height: 0 !important; }
+    .argex-wm {
+        position: fixed; right: 14px; bottom: 10px; z-index: 999;
+        font-family: 'IBM Plex Mono', monospace; font-size: 0.72rem;
+        color: var(--ink-muted); background: rgba(22, 27, 34, 0.85);
+        border: 1px solid var(--border-hairline); border-radius: 5px;
+        padding: 0.25rem 0.6rem;
+    }
+    .argex-wm a { color: var(--accent-primary); text-decoration: none; }
+    .argex-wm a:hover { text-decoration: underline; }
+    </style>
+    <div class="argex-wm">coded by <a href="https://github.com/rudy0317" target="_blank" rel="noopener noreferrer">github.com/rudy0317</a></div>
+    """,
+    unsafe_allow_html=True,
+)
+
 template_src = resolve_template_source(local_template_path)
 if template_src is None:
     uploaded_tpl = st.file_uploader(
