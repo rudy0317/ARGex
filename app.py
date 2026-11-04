@@ -1,3 +1,4 @@
+from io import BytesIO
 import json
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,33 @@ def load_config() -> dict[str, Any]:
         "location_regex": r"(?:^|[^a-zA-Z0-9])([a-zA-Z]{2,5})[\s\.\-~_|()\[\]]{0,6}([0-9]{4,8})(?=[^a-zA-Z0-9]|$)",
         "blacklist_prefixes": ["IMG", "IMAGE", "LINE", "ALBUM", "PHOTO", "DSC"],
     }
+
+
+def build_renamed_photos_zip(dp_results: dict[str, dict[str, Any]]) -> bytes:
+    """Bangun archive .zip berisi foto yang sudah di-rename per folder DP di dalam memori."""
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+        for dp_code in sorted(dp_results.keys()):
+            photos: dict[str, bytes] = dp_results[dp_code].get("photos", {})
+            exts: dict[str, str] = dp_results[dp_code].get("exts", {})
+            for category, raw_bytes in photos.items():
+                ext = exts.get(category, ".jpg")
+                zout.writestr(f"{dp_code}/{category}{ext}", raw_bytes)
+    return buf.getvalue()
+
+
+def build_complete_bundle_zip(dp_results: dict[str, dict[str, Any]], excel_bytes: bytes) -> bytes:
+    """Bangun archive .zip lengkap berisi Report Excel + seluruh folder foto yang sudah di-rename."""
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+        zout.writestr("Report/Report_FTTH_Auto.xlsx", excel_bytes)
+        for dp_code in sorted(dp_results.keys()):
+            photos: dict[str, bytes] = dp_results[dp_code].get("photos", {})
+            exts: dict[str, str] = dp_results[dp_code].get("exts", {})
+            for category, raw_bytes in photos.items():
+                ext = exts.get(category, ".jpg")
+                zout.writestr(f"foto_renamed/{dp_code}/{category}{ext}", raw_bytes)
+    return buf.getvalue()
 
 
 st.set_page_config(
@@ -47,7 +75,7 @@ template_path = BASE_DIR / cfg["paths"]["template_excel"]
 
 st.title("ARGex — FTTH Excel Report Exporter (Mode 1–7)")
 st.caption(
-    "Upload file `.zip` berisi folder DP (masing-masing foto dinamai `1` s/d `7`), periksa tabel pemetaan, lalu unduh file Excel `.xlsx` sesuai template Biznet."
+    "Upload file `.zip` berisi folder DP (masing-masing foto dinamai `1` s/d `7`), periksa tabel pemetaan, lalu unduh file Excel `.xlsx` maupun paket foto yang sudah di-rename."
 )
 
 with st.expander("Referensi Urutan Nomor Foto (1 s/d 7)", expanded=True):
@@ -82,10 +110,16 @@ if uploaded_zip is not None:
 
             category = number_map[slot_num]
             if loc_code not in dp_results:
-                dp_results[loc_code] = {"photos": {}, "input_dbm": "", "output_dbm": ""}
+                dp_results[loc_code] = {
+                    "photos": {},
+                    "exts": {},
+                    "input_dbm": "",
+                    "output_dbm": "",
+                }
 
             if category not in dp_results[loc_code]["photos"]:
                 dp_results[loc_code]["photos"][category] = zf.read(member)
+                dp_results[loc_code]["exts"][category] = p.suffix
 
     if not dp_results:
         st.error("Tidak ditemukan foto bernomor 1 s/d 7 (.jpg/.jpeg/.png) di dalam file ZIP.")
@@ -123,11 +157,33 @@ if uploaded_zip is not None:
                 st.write(", ".join(skipped_files))
 
         excel_bytes = export_to_excel_bytes(template_path, dp_results)
+        renamed_zip_bytes = build_renamed_photos_zip(dp_results)
+
         if excel_bytes:
-            st.download_button(
-                label="Download Report Excel (.xlsx)",
-                data=excel_bytes,
-                file_name="Report_FTTH_Auto.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                type="primary",
-            )
+            bundle_zip_bytes = build_complete_bundle_zip(dp_results, excel_bytes)
+            btn_col1, btn_col2, btn_col3 = st.columns(3)
+            with btn_col1:
+                st.download_button(
+                    label="Download Report Excel (.xlsx)",
+                    data=excel_bytes,
+                    file_name="Report_FTTH_Auto.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary",
+                    use_container_width=True,
+                )
+            with btn_col2:
+                st.download_button(
+                    label="Download Foto Renamed (.zip)",
+                    data=renamed_zip_bytes,
+                    file_name="Foto_Renamed_FTTH.zip",
+                    mime="application/zip",
+                    use_container_width=True,
+                )
+            with btn_col3:
+                st.download_button(
+                    label="Download Paket Lengkap: Excel + Foto (.zip)",
+                    data=bundle_zip_bytes,
+                    file_name="Bundle_Report_dan_Foto_FTTH.zip",
+                    mime="application/zip",
+                    use_container_width=True,
+                )
