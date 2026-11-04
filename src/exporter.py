@@ -18,11 +18,22 @@ CATEGORY_COL_MAP: dict[str, tuple[int, int]] = {
     "Structure": (33, 36),   # AH .. AK
 }
 
+DP_COL_HEADERS: dict[int, str] = {
+    10: "Output RK",
+    14: "Input DP",
+    18: "Output DP",
+    22: "Loop DP",
+    26: "Basetray DP",
+    30: "DP",
+    34: "Structure",
+}
 
-def _extract_logo_bytes(template_path: Path) -> bytes | None:
-    """Ambil file logo Biznet dari dalam archive template xlsx agar tidak error #NAME? akibat rumus WPS DISPIMG."""
+
+def _extract_logo_bytes(template_src: Path | bytes) -> bytes | None:
+    """Ambil file logo Biznet dari dalam archive template xlsx (baik Path maupun bytes)."""
     try:
-        with zipfile.ZipFile(template_path, "r") as z:
+        z_target = BytesIO(template_src) if isinstance(template_src, (bytes, bytearray)) else template_src
+        with zipfile.ZipFile(z_target, "r") as z:
             for candidate in ("xl/media/image1.png", "xl/media/image25.png"):
                 if candidate in z.namelist():
                     return z.read(candidate)
@@ -32,7 +43,7 @@ def _extract_logo_bytes(template_path: Path) -> bytes | None:
 
 
 def _copy_dp_block_style(ws: Any, src_base_row: int, dst_base_row: int) -> None:
-    """Salin struktur merge cell, border, font, dan label dari blok DP template ke baris baru."""
+    """Salin struktur merge cell, border, font, dan label DP dari blok referensi (baris 35) ke baris baru."""
     for r_offset in range(10):
         src_r = src_base_row + r_offset
         dst_r = dst_base_row + r_offset
@@ -40,13 +51,14 @@ def _copy_dp_block_style(ws: Any, src_base_row: int, dst_base_row: int) -> None:
         for col_idx in range(2, 38):
             src_cell = ws.cell(src_r, col_idx)
             dst_cell = ws.cell(dst_r, col_idx)
-            if r_offset == 0:
-                dst_cell.value = src_cell.value
             if src_cell.has_style:
                 dst_cell.font = copy(src_cell.font)
                 dst_cell.fill = copy(src_cell.fill)
                 dst_cell.border = copy(src_cell.border)
                 dst_cell.alignment = copy(src_cell.alignment)
+
+    for col_idx, header_text in DP_COL_HEADERS.items():
+        ws.cell(dst_base_row, col_idx).value = header_text
 
     end_r = dst_base_row + 8
     merge_ranges = [
@@ -59,6 +71,7 @@ def _copy_dp_block_style(ws: Any, src_base_row: int, dst_base_row: int) -> None:
         f"Z{dst_base_row}:AC{end_r}",
         f"AD{dst_base_row}:AG{end_r}",
         f"AH{dst_base_row}:AK{end_r}",
+        f"B{dst_base_row + 9}:AK{dst_base_row + 9}",
     ]
     existing_merges = {str(rng) for rng in ws.merged_cells.ranges}
     for m_range in merge_ranges:
@@ -66,23 +79,23 @@ def _copy_dp_block_style(ws: Any, src_base_row: int, dst_base_row: int) -> None:
             ws.merge_cells(m_range)
 
 
-def export_to_excel(
-    template_path: Path,
-    output_excel_path: Path,
+def build_workbook(
+    template_src: Path | bytes,
     dp_results: dict[str, dict[str, Any]],
-) -> Path | None:
+) -> openpyxl.Workbook | None:
     """
-    Masukkan hasil foto yang sudah diklasifikasi ke sheet 'Captured Devices 01'
-    dan nilai redaman dBm ke sheet 'Form Measurement'.
+    Bangun objek Workbook openpyxl dari Path lokal atau raw bytes (st.secrets / upload UI):
+    - Baris 15 (No 1: OLT) & Baris 25 (No 2: RK) dikosongkan gambarnya (kotak tetap utuh).
+    - Daftar DP yang di-upload mulai dari Baris 35 (No 3), Baris 45 (No 4), Baris 55 (No 5), dst.
     """
-    if not template_path.is_file():
-        print(f"[WARN] File template Excel tidak ditemukan: {template_path}")
+    if isinstance(template_src, Path) and not template_src.is_file():
+        print(f"[WARN] File template Excel tidak ditemukan: {template_src}")
         return None
 
-    logo_bytes = _extract_logo_bytes(template_path)
-    wb = openpyxl.load_workbook(template_path)
+    logo_bytes = _extract_logo_bytes(template_src)
+    wb_input = BytesIO(template_src) if isinstance(template_src, (bytes, bytearray)) else template_src
+    wb = openpyxl.load_workbook(wb_input)
 
-    # Ganti formula proprietary WPS =DISPIMG(...) di sel B2 dengan gambar logo standar Excel
     for sname in wb.sheetnames:
         ws_any = wb[sname]
         b2_val = ws_any["B2"].value
@@ -100,38 +113,44 @@ def export_to_excel(
 
     ws_cap = wb["Captured Devices 01"]
 
-    # Hapus gambar sampel DP lama di baris >= 34 (0-indexed >= 33), pertahankan gambar OLT/RK di atasnya
     kept_images = []
     for img in ws_cap._images:
         anc = img.anchor
-        if hasattr(anc, "_from") and anc._from.row >= 33:
+        if hasattr(anc, "_from") and anc._from.row >= 12:
             continue
         kept_images.append(img)
     ws_cap._images = kept_images
 
-    # Bersihkan label DP sampel lama pada baris 35, 45, 55
+    ws_cap.cell(15, 3).value = None
+    ws_cap.cell(25, 3).value = None
+
     for old_base in (35, 45, 55):
         ws_cap.cell(old_base, 2).value = None
         ws_cap.cell(old_base, 3).value = None
 
     sorted_dp_codes = sorted(dp_results.keys())
 
-    # Isi tiap blok DP mulai dari baris 35 (interval 10 baris: 35, 45, 55, ...)
     for idx, dp_code in enumerate(sorted_dp_codes):
         base_row = 35 + (idx * 10)
         if base_row > 55:
             _copy_dp_block_style(ws_cap, 35, base_row)
 
-        ws_cap.cell(base_row, 2).value = idx + 3  # Nomor urut setelah OLT(1) dan RK(2)
+        ws_cap.cell(base_row, 2).value = idx + 3
         ws_cap.cell(base_row, 3).value = f"DP {dp_code}"
 
-        photos_map: dict[str, Path] = dp_results[dp_code].get("photos", {})
+        photos_map: dict[str, Path | bytes] = dp_results[dp_code].get("photos", {})
         for category, (col_start, col_end) in CATEGORY_COL_MAP.items():
-            img_path = photos_map.get(category)
-            if not img_path or not img_path.is_file():
+            img_src = photos_map.get(category)
+            if not img_src:
                 continue
 
-            xl_img = XLImage(str(img_path))
+            if isinstance(img_src, (bytes, bytearray)):
+                xl_img = XLImage(BytesIO(img_src))
+            elif isinstance(img_src, Path) and img_src.is_file():
+                xl_img = XLImage(str(img_src))
+            else:
+                continue
+
             _from = AnchorMarker(
                 col=col_start,
                 colOff=30000,
@@ -147,10 +166,8 @@ def export_to_excel(
             xl_img.anchor = TwoCellAnchor(editAs="twoCell", _from=_from, to=to)
             ws_cap.add_image(xl_img)
 
-    # Sinkronkan juga kode DP & hasil bacaan OPM dBm ke sheet 'Form Measurement'
     if "Form Measurement" in wb.sheetnames:
         ws_meas = wb["Form Measurement"]
-        # Bersihkan nilai sampel lama pada baris 29..34 untuk kolom DP Code (K), Input dBm (N), Output dBm (O)
         for clear_r in range(29, 35):
             ws_meas.cell(clear_r, 11).value = None
             ws_meas.cell(clear_r, 14).value = None
@@ -159,12 +176,37 @@ def export_to_excel(
         for idx, dp_code in enumerate(sorted_dp_codes):
             row_m = 29 + idx
             ws_meas.cell(row_m, 2).value = idx + 1
-            ws_meas.cell(row_m, 11).value = dp_code  # Col K: DP Code
+            ws_meas.cell(row_m, 11).value = dp_code
             if in_dbm := dp_results[dp_code].get("input_dbm"):
-                ws_meas.cell(row_m, 14).value = in_dbm.replace(".", ",")  # Col N: Input DP (dBm)
+                ws_meas.cell(row_m, 14).value = str(in_dbm).replace(".", ",")
             if out_dbm := dp_results[dp_code].get("output_dbm"):
-                ws_meas.cell(row_m, 15).value = out_dbm.replace(".", ",")  # Col O: Output DP (dBm)
+                ws_meas.cell(row_m, 15).value = str(out_dbm).replace(".", ",")
 
+    return wb
+
+
+def export_to_excel(
+    template_src: Path | bytes,
+    output_excel_path: Path,
+    dp_results: dict[str, dict[str, Any]],
+) -> Path | None:
+    """Simpan hasil workbook ke file .xlsx di disk."""
+    wb = build_workbook(template_src, dp_results)
+    if wb is None:
+        return None
     output_excel_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(output_excel_path)
     return output_excel_path
+
+
+def export_to_excel_bytes(
+    template_src: Path | bytes,
+    dp_results: dict[str, dict[str, Any]],
+) -> bytes | None:
+    """Kembalikan byte stream file .xlsx untuk di-download langsung lewat Web UI."""
+    wb = build_workbook(template_src, dp_results)
+    if wb is None:
+        return None
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()

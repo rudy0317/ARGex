@@ -1,4 +1,14 @@
 {
+  "mode": "numbered",
+  "number_map": {
+    "1": "Output RK",
+    "2": "Input DP",
+    "3": "Output DP",
+    "4": "Loop DP",
+    "5": "Basetray DP",
+    "6": "DP",
+    "7": "Structure"
+  },
   "paths": {
     "input_dirs": [
       "./Folder Aset"

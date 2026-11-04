@@ -2,19 +2,56 @@ from pathlib import Path
 import re
 import shutil
 from typing import Any
-import cv2
-import pytesseract
-from src.classifier import AuditClassifier
 from src.exporter import export_to_excel
 
+DEFAULT_NUMBER_MAP: dict[str, str] = {
+    "1": "Output RK",
+    "2": "Input DP",
+    "3": "Output DP",
+    "4": "Loop DP",
+    "5": "Basetray DP",
+    "6": "DP",
+    "7": "Structure",
+}
 
-def setup_tesseract(cmd_path: str) -> None:
-    """Set path executable Tesseract dari config atau fallback ke system PATH."""
-    p = Path(cmd_path)
-    if p.is_file():
-        pytesseract.pytesseract.tesseract_cmd = str(p)
-    elif fallback := shutil.which("tesseract"):
-        pytesseract.pytesseract.tesseract_cmd = fallback
+
+def extract_dp_code_from_path(
+    filepath_parts: tuple[str, ...],
+    filename: str,
+    location_regex: str,
+    blacklist: set[str],
+) -> str:
+    """Ekstrak kode lokasi DP (contoh: LTS010504) dari nama folder induk atau nama file."""
+    pattern = re.compile(location_regex, re.IGNORECASE)
+    for part in reversed(filepath_parts[:-1]):
+        for prefix, digits in pattern.findall(part):
+            if prefix.upper() not in blacklist and digits.isdigit():
+                return f"{prefix.upper()}{digits}"
+
+    for prefix, digits in pattern.findall(filename):
+        if prefix.upper() not in blacklist and digits.isdigit():
+            return f"{prefix.upper()}{digits}"
+
+    # Fallback: gunakan nama folder induk langsung jika tidak cocok regex
+    if len(filepath_parts) >= 2:
+        parent_name = filepath_parts[-2].strip()
+        if parent_name and parent_name.upper() not in blacklist:
+            return parent_name
+    return "UNKNOWN_DP"
+
+
+def extract_number_slot(stem: str, valid_keys: set[str]) -> str | None:
+    """
+    Ambil nomor urut foto ('1' s/d '7') HANYA dari file yang sudah di-rename murni angka
+    (contoh: '1.jpg', '2.jpg', ..., '7.jpg' atau '01.jpg'..'07.jpg').
+    File sisa yang belum di-rename (seperti 'LINE_ALBUM_..._2.jpg') otomatis diabaikan.
+    """
+    s = stem.strip()
+    if s.isdigit():
+        norm = str(int(s))
+        return norm if norm in valid_keys else None
+
+    return None
 
 
 def run_batch_scan(
@@ -22,17 +59,24 @@ def run_batch_scan(
     input_override: list[str] | None = None,
     target_override: list[str] | None = None,
 ) -> None:
-    """Scan semua folder input, klasifikasikan gambar, simpan per folder lokasi, dan export ke Excel."""
+    """
+    Mode Numbered (1-7): Petakan foto 1 s/d 7 per folder DP langsung ke kolom Excel
+    tanpa membutuhkan OpenCV / Tesseract-OCR.
+    """
     paths_cfg = config["paths"]
-    setup_tesseract(paths_cfg.get("tesseract_cmd", ""))
-
     input_dirs = [Path(p) for p in (input_override or paths_cfg.get("input_dirs", []))]
     output_dir = Path(paths_cfg.get("output_dir", "./foto_renamed"))
     template_excel = Path(paths_cfg.get("template_excel", ""))
     output_excel = Path(paths_cfg.get("output_excel", "./Report/Report_FTTH_Auto.xlsx"))
-    active_targets = target_override or config.get("active_targets", ["DP"])
 
-    classifier = AuditClassifier(config)
+    number_map: dict[str, str] = config.get("number_map", DEFAULT_NUMBER_MAP)
+    valid_keys = set(number_map.keys())
+    loc_regex = config.get(
+        "location_regex",
+        r"(?:^|[^a-zA-Z0-9])([a-zA-Z]{2,5})[\s\.\-~_|()\[\]]{0,6}([0-9]{4,8})(?=[^a-zA-Z0-9]|$)",
+    )
+    blacklist = {w.upper() for w in config.get("blacklist_prefixes", [])}
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
     all_files: list[Path] = []
@@ -47,66 +91,59 @@ def run_batch_scan(
         else:
             print(f"[WARN] Folder input tidak ditemukan: {in_dir}")
 
-    print(f"Target Variabel Aktif : {', '.join(active_targets)}")
+    print("Mode Eksekusi         : Manual Numbered (1-7 -> Excel)")
+    print(
+        "Mapping Nomor         : "
+        + ", ".join(f"{k}={v}" for k, v in sorted(number_map.items(), key=lambda x: int(x[0])))
+    )
     print(f"Total Foto Ditemukan  : {len(all_files)} file.\n" + "=" * 70)
+
+    def _natural_sort_key(p: Path) -> tuple[str, int, str]:
+        slot = extract_number_slot(p.stem, valid_keys)
+        return (str(p.parent), int(slot) if slot else 999, p.name)
 
     matched_count = 0
     skipped_count = 0
     dp_results: dict[str, dict[str, Any]] = {}
 
-    def _natural_sort_key(p: Path) -> tuple[str, int, str]:
-        m = re.search(r"_(\d+)$", p.stem)
-        return (str(p.parent), int(m.group(1)) if m else 0, p.name)
-
     for filepath in sorted(all_files, key=_natural_sort_key):
-        img = cv2.imread(str(filepath))
-        if img is None:
-            print(f"[SKIP] Gagal membaca file: {filepath.name}")
+        loc_code = extract_dp_code_from_path(filepath.parts, filepath.name, loc_regex, blacklist)
+        slot_num = extract_number_slot(filepath.stem, valid_keys)
+
+        if not slot_num:
+            print(f"[SKIP] {loc_code}/{filepath.name} | Nama file bukan nomor 1-7")
             skipped_count += 1
             continue
 
-        category, detail = classifier.classify(img, active_targets)
-        loc_code = classifier.extract_folder_code(img, filepath.parts, filepath.name)
-
-        if category:
-            dest_folder = output_dir / loc_code
-            dest_folder.mkdir(parents=True, exist_ok=True)
-
-            ext = filepath.suffix
-            dest_file = dest_folder / f"{category}{ext}"
-
-            if loc_code not in dp_results:
-                dp_results[loc_code] = {"photos": {}, "input_dbm": None, "output_dbm": None}
-
-            if category in dp_results[loc_code]["photos"]:
-                print(
-                    f"[DUP-SKIP] {loc_code}/{filepath.name} | {dest_file.name} sudah terisi di sesi ini"
-                )
-                skipped_count += 1
-                continue
-
-            shutil.copy2(filepath, dest_file)
-            print(
-                f"[MATCH: {category}] {loc_code}/{filepath.name} --> {loc_code}/{dest_file.name} | {detail}"
-            )
-            matched_count += 1
-
-            dp_results[loc_code]["photos"][category] = dest_file
-
-            if dbm_match := re.search(r"-\d+\.\d+", detail):
-                if category == "Input DP":
-                    dp_results[loc_code]["input_dbm"] = dbm_match.group(0)
-                elif category == "Output DP":
-                    dp_results[loc_code]["output_dbm"] = dbm_match.group(0)
-        else:
-            print(f"[SKIP] {loc_code}/{filepath.name} | {detail}")
+        category = number_map[slot_num]
+        if target_override and category not in target_override:
             skipped_count += 1
+            continue
+
+        dest_folder = output_dir / loc_code
+        dest_folder.mkdir(parents=True, exist_ok=True)
+        dest_file = dest_folder / f"{category}{filepath.suffix}"
+
+        if loc_code not in dp_results:
+            dp_results[loc_code] = {"photos": {}, "input_dbm": None, "output_dbm": None}
+
+        if category in dp_results[loc_code]["photos"]:
+            print(f"[DUP-SKIP] {loc_code}/{filepath.name} | Nomor {slot_num} ({category}) sudah ada")
+            skipped_count += 1
+            continue
+
+        shutil.copy2(filepath, dest_file)
+        dp_results[loc_code]["photos"][category] = dest_file
+        matched_count += 1
+        print(f"[SLOT #{slot_num} -> {category}] {loc_code}/{filepath.name} --> {loc_code}/{dest_file.name}")
 
     print("=" * 70)
-    print(f"Selesai! Berhasil Di-rename: {matched_count} | Di-skip (Bukan Target): {skipped_count}")
+    print(f"Selesai! Berhasil Dipetakan: {matched_count} | Di-skip (Di luar 1-7): {skipped_count}")
 
     if dp_results and template_excel.is_file():
         saved_excel = export_to_excel(template_excel, output_excel, dp_results)
         if saved_excel:
             print(f"[EXCEL] Laporan otomatis berhasil dibuat: {saved_excel}")
-            print(f"        Total blok DP tertulis di 'Captured Devices 01': {len(dp_results)} DP ({', '.join(sorted(dp_results.keys()))})")
+            print(
+                f"        Total blok DP tertulis di 'Captured Devices 01': {len(dp_results)} DP ({', '.join(sorted(dp_results.keys()))})"
+            )
