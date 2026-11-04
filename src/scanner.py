@@ -42,17 +42,13 @@ def extract_dp_code_from_path(
 
 def extract_number_slot(stem: str, valid_keys: set[str]) -> str | None:
     """
-    Ambil nomor urut foto ('1' s/d '7') dari nama file:
-    - Mendukung '1.jpg', '01.jpg', '2.png'
-    - Mendukung akhiran '_1.jpg', '-1.jpg', ' 1.jpg' (misal LINE_ALBUM_LTS010504_261024_1.jpg)
+    Ambil nomor urut foto ('1' s/d '7') HANYA dari file yang sudah di-rename murni angka
+    (contoh: '1.jpg', '2.jpg', ..., '7.jpg' atau '01.jpg'..'07.jpg').
+    File sisa yang belum di-rename (seperti 'LINE_ALBUM_..._2.jpg') otomatis diabaikan.
     """
     s = stem.strip()
     if s.isdigit():
         norm = str(int(s))
-        return norm if norm in valid_keys else None
-
-    if m := re.search(r"(?:^|[_\-\s])0*([1-9]\d*)$", s):
-        norm = m.group(1)
         return norm if norm in valid_keys else None
 
     return None

@@ -18,7 +18,8 @@ dist/
 tesseract/
 Tesseract-OCR/
 
-# Field photo datasets & generated outputs (do not commit raw/output photos)
+# Field photo datasets, internal templates & generated outputs (do not commit to public repo)
+Template Reporting/
 Folder Aset/
 foto_renamed/
 foto_hasil/
@@ -29,3 +30,9 @@ Report/*.xlsx
 ~$*.xlsx
 .DS_Store
 Thumbs.db
+
+# Design skill metadata (local only)
+.impeccable/
+PRODUCT.md
+DESIGN.md
+

@@ -18,11 +18,22 @@ CATEGORY_COL_MAP: dict[str, tuple[int, int]] = {
     "Structure": (33, 36),   # AH .. AK
 }
 
+DP_COL_HEADERS: dict[int, str] = {
+    10: "Output RK",
+    14: "Input DP",
+    18: "Output DP",
+    22: "Loop DP",
+    26: "Basetray DP",
+    30: "DP",
+    34: "Structure",
+}
 
-def _extract_logo_bytes(template_path: Path) -> bytes | None:
-    """Ambil file logo Biznet dari dalam archive template xlsx agar tidak error #NAME? akibat rumus WPS DISPIMG."""
+
+def _extract_logo_bytes(template_src: Path | bytes) -> bytes | None:
+    """Ambil file logo Biznet dari dalam archive template xlsx (baik Path maupun bytes)."""
     try:
-        with zipfile.ZipFile(template_path, "r") as z:
+        z_target = BytesIO(template_src) if isinstance(template_src, (bytes, bytearray)) else template_src
+        with zipfile.ZipFile(z_target, "r") as z:
             for candidate in ("xl/media/image1.png", "xl/media/image25.png"):
                 if candidate in z.namelist():
                     return z.read(candidate)
@@ -32,7 +43,7 @@ def _extract_logo_bytes(template_path: Path) -> bytes | None:
 
 
 def _copy_dp_block_style(ws: Any, src_base_row: int, dst_base_row: int) -> None:
-    """Salin struktur merge cell, border, font, dan label dari blok DP template ke baris baru."""
+    """Salin struktur merge cell, border, font, dan label DP dari blok referensi (baris 35) ke baris baru."""
     for r_offset in range(10):
         src_r = src_base_row + r_offset
         dst_r = dst_base_row + r_offset
@@ -40,13 +51,14 @@ def _copy_dp_block_style(ws: Any, src_base_row: int, dst_base_row: int) -> None:
         for col_idx in range(2, 38):
             src_cell = ws.cell(src_r, col_idx)
             dst_cell = ws.cell(dst_r, col_idx)
-            if r_offset == 0:
-                dst_cell.value = src_cell.value
             if src_cell.has_style:
                 dst_cell.font = copy(src_cell.font)
                 dst_cell.fill = copy(src_cell.fill)
                 dst_cell.border = copy(src_cell.border)
                 dst_cell.alignment = copy(src_cell.alignment)
+
+    for col_idx, header_text in DP_COL_HEADERS.items():
+        ws.cell(dst_base_row, col_idx).value = header_text
 
     end_r = dst_base_row + 8
     merge_ranges = [
@@ -59,6 +71,7 @@ def _copy_dp_block_style(ws: Any, src_base_row: int, dst_base_row: int) -> None:
         f"Z{dst_base_row}:AC{end_r}",
         f"AD{dst_base_row}:AG{end_r}",
         f"AH{dst_base_row}:AK{end_r}",
+        f"B{dst_base_row + 9}:AK{dst_base_row + 9}",
     ]
     existing_merges = {str(rng) for rng in ws.merged_cells.ranges}
     for m_range in merge_ranges:
@@ -67,16 +80,21 @@ def _copy_dp_block_style(ws: Any, src_base_row: int, dst_base_row: int) -> None:
 
 
 def build_workbook(
-    template_path: Path,
+    template_src: Path | bytes,
     dp_results: dict[str, dict[str, Any]],
 ) -> openpyxl.Workbook | None:
-    """Bangun objek Workbook openpyxl berisi foto per DP (mendukung Path maupun raw bytes)."""
-    if not template_path.is_file():
-        print(f"[WARN] File template Excel tidak ditemukan: {template_path}")
+    """
+    Bangun objek Workbook openpyxl dari Path lokal atau raw bytes (st.secrets / upload UI):
+    - Baris 15 (No 1: OLT) & Baris 25 (No 2: RK) dikosongkan gambarnya (kotak tetap utuh).
+    - Daftar DP yang di-upload mulai dari Baris 35 (No 3), Baris 45 (No 4), Baris 55 (No 5), dst.
+    """
+    if isinstance(template_src, Path) and not template_src.is_file():
+        print(f"[WARN] File template Excel tidak ditemukan: {template_src}")
         return None
 
-    logo_bytes = _extract_logo_bytes(template_path)
-    wb = openpyxl.load_workbook(template_path)
+    logo_bytes = _extract_logo_bytes(template_src)
+    wb_input = BytesIO(template_src) if isinstance(template_src, (bytes, bytearray)) else template_src
+    wb = openpyxl.load_workbook(wb_input)
 
     for sname in wb.sheetnames:
         ws_any = wb[sname]
@@ -98,10 +116,13 @@ def build_workbook(
     kept_images = []
     for img in ws_cap._images:
         anc = img.anchor
-        if hasattr(anc, "_from") and anc._from.row >= 33:
+        if hasattr(anc, "_from") and anc._from.row >= 12:
             continue
         kept_images.append(img)
     ws_cap._images = kept_images
+
+    ws_cap.cell(15, 3).value = None
+    ws_cap.cell(25, 3).value = None
 
     for old_base in (35, 45, 55):
         ws_cap.cell(old_base, 2).value = None
@@ -165,12 +186,12 @@ def build_workbook(
 
 
 def export_to_excel(
-    template_path: Path,
+    template_src: Path | bytes,
     output_excel_path: Path,
     dp_results: dict[str, dict[str, Any]],
 ) -> Path | None:
     """Simpan hasil workbook ke file .xlsx di disk."""
-    wb = build_workbook(template_path, dp_results)
+    wb = build_workbook(template_src, dp_results)
     if wb is None:
         return None
     output_excel_path.parent.mkdir(parents=True, exist_ok=True)
@@ -179,11 +200,11 @@ def export_to_excel(
 
 
 def export_to_excel_bytes(
-    template_path: Path,
+    template_src: Path | bytes,
     dp_results: dict[str, dict[str, Any]],
 ) -> bytes | None:
     """Kembalikan byte stream file .xlsx untuk di-download langsung lewat Web UI."""
-    wb = build_workbook(template_path, dp_results)
+    wb = build_workbook(template_src, dp_results)
     if wb is None:
         return None
     buf = BytesIO()
