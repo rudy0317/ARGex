@@ -36,6 +36,11 @@ def load_config() -> dict[str, Any]:
     }
 
 
+@st.cache_data(show_spinner=False)
+def _decode_template_b64(b64: str) -> bytes:
+    return base64.b64decode(b64)
+
+
 def resolve_template_source(local_template_path: Path) -> Path | bytes | None:
     """
     Resolusi 3 lapis untuk Master Template Excel (supaya file internal kantor aman tidak masuk repo publik):
@@ -47,7 +52,7 @@ def resolve_template_source(local_template_path: Path) -> Path | bytes | None:
         return local_template_path
     try:
         if "TEMPLATE_EXCEL_B64" in st.secrets:
-            return base64.b64decode(st.secrets["TEMPLATE_EXCEL_B64"])
+            return _decode_template_b64(st.secrets["TEMPLATE_EXCEL_B64"])
     except Exception:
         pass
     return st.session_state.get("custom_template_bytes")
@@ -56,7 +61,7 @@ def resolve_template_source(local_template_path: Path) -> Path | bytes | None:
 def build_renamed_photos_zip(dp_results: dict[str, dict[str, Any]]) -> bytes:
     """Bangun archive .zip berisi foto yang sudah di-rename per folder DP di dalam memori."""
     buf = BytesIO()
-    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zout:
         for dp_code in sorted(dp_results.keys()):
             photos: dict[str, bytes] = dp_results[dp_code].get("photos", {})
             exts: dict[str, str] = dp_results[dp_code].get("exts", {})
@@ -69,7 +74,7 @@ def build_renamed_photos_zip(dp_results: dict[str, dict[str, Any]]) -> bytes:
 def build_complete_bundle_zip(dp_results: dict[str, dict[str, Any]], excel_bytes: bytes) -> bytes:
     """Bangun archive .zip lengkap berisi Report Excel + seluruh folder foto yang sudah di-rename."""
     buf = BytesIO()
-    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zout:
         zout.writestr("Report/Report_FTTH_Auto.xlsx", excel_bytes)
         for dp_code in sorted(dp_results.keys()):
             photos: dict[str, bytes] = dp_results[dp_code].get("photos", {})
@@ -78,6 +83,43 @@ def build_complete_bundle_zip(dp_results: dict[str, dict[str, Any]], excel_bytes
                 ext = exts.get(category, ".jpg")
                 zout.writestr(f"foto_renamed/{dp_code}/{category}{ext}", raw_bytes)
     return buf.getvalue()
+
+
+def store_signature(dp_results: dict[str, dict[str, Any]]) -> tuple:
+    """Signature murah (tanpa hash bytes) untuk key cache; berubah saat foto ditambah/diganti/dihapus."""
+    return tuple(
+        (dp, cat, len(raw))
+        for dp in sorted(dp_results)
+        for cat, raw in sorted(dp_results[dp].get("photos", {}).items())
+    )
+
+
+@st.cache_data(show_spinner="Menyusun Excel...", max_entries=2)
+def cached_excel(_template: Path | bytes, tpl_key: str, sig: tuple, _dp_results: dict) -> bytes:
+    return export_to_excel_bytes(_template, _dp_results)
+
+
+@st.cache_data(show_spinner=False, max_entries=2)
+def cached_renamed_zip(sig: tuple, _dp_results: dict) -> bytes:
+    return build_renamed_photos_zip(_dp_results)
+
+
+@st.cache_data(show_spinner=False, max_entries=2)
+def cached_bundle_zip(sig: tuple, tpl_key: str, _dp_results: dict, _excel: bytes) -> bytes:
+    return build_complete_bundle_zip(_dp_results, _excel)
+
+
+@st.cache_data(show_spinner=False, max_entries=300)
+def make_thumbnail(raw: bytes, max_px: int = 360) -> bytes:
+    """Downscale untuk preview supaya browser tidak mengunduh foto HP full-size."""
+    from PIL import Image, ImageOps
+
+    with Image.open(BytesIO(raw)) as im:
+        im = ImageOps.exif_transpose(im).convert("RGB")
+        im.thumbnail((max_px, max_px))
+        out = BytesIO()
+        im.save(out, format="JPEG", quality=70)
+        return out.getvalue()
 
 
 @st.dialog("Konfirmasi Hapus DP")
@@ -637,7 +679,7 @@ else:
                 with p_cols[idx]:
                     if cat in photos:
                         st.image(
-                            photos[cat],
+                            make_thumbnail(photos[cat]),
                             caption=f"#{idx+1} {cat} ({fnames.get(cat, '')})",
                             use_container_width=True,
                         )
@@ -650,11 +692,13 @@ else:
         ):
             st.write(", ".join(st.session_state["last_skipped"]))
 
-    renamed_zip_bytes = build_renamed_photos_zip(dp_store)
-    excel_bytes = export_to_excel_bytes(template_src, dp_store) if template_src else None
+    sig = store_signature(dp_store)
+    tpl_key = str(template_src) if isinstance(template_src, Path) else f"bytes:{len(template_src or b'')}"
+    renamed_zip_bytes = cached_renamed_zip(sig, dp_store)
+    excel_bytes = cached_excel(template_src, tpl_key, sig, dp_store) if template_src else None
 
     if excel_bytes:
-        bundle_zip_bytes = build_complete_bundle_zip(dp_store, excel_bytes)
+        bundle_zip_bytes = cached_bundle_zip(sig, tpl_key, dp_store, excel_bytes)
         btn_col1, btn_col2, btn_col3 = st.columns(3)
         with btn_col1:
             st.download_button(
