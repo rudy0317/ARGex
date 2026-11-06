@@ -5,6 +5,7 @@ from typing import Any
 import zipfile
 import openpyxl
 from openpyxl.drawing.image import Image as XLImage
+from openpyxl.styles.cell_style import StyleArray
 from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, TwoCellAnchor
 
 # Mapping kategori ke (col_start_0idx, col_end_0idx) pada sheet 'Captured Devices 01'
@@ -81,8 +82,8 @@ def _copy_dp_block_style(ws: Any, src_base_row: int, dst_base_row: int) -> None:
 
 def _shift_footer_down(ws: Any, first_row: int, shift: int) -> None:
     """
-    Geser footer template (Note / Authorization, mulai baris `first_row`) ke bawah sebanyak `shift` baris
-    supaya DP ke-4 dst. punya ruang dan tidak menabrak merged cell footer.
+    Geser footer (mulai baris `first_row`) ke bawah sebanyak `shift` baris, termasuk merged cell,
+    style, dan tinggi baris, supaya baris data baru tidak menabrak merged cell footer.
     """
     footer_merges = [
         (r.min_col, r.min_row, r.max_col, r.max_row)
@@ -102,7 +103,7 @@ def _shift_footer_down(ws: Any, first_row: int, shift: int) -> None:
             dst.value = src.value
             dst._style = copy(src._style)
             src.value = None
-            src._style = copy(ws.cell(1, max_col_idx + 5)._style)
+            src._style = StyleArray()
 
     for min_col, min_row, max_col, max_row in footer_merges:
         ws.merge_cells(
@@ -113,62 +114,99 @@ def _shift_footer_down(ws: Any, first_row: int, shift: int) -> None:
         )
 
 
+def read_existing_dp_codes(report_bytes: bytes) -> list[str]:
+    """Baca daftar kode DP yang sudah ada di sheet 'Captured Devices 01' dari report hasil export sebelumnya."""
+    wb = openpyxl.load_workbook(BytesIO(report_bytes))
+    if "Captured Devices 01" not in wb.sheetnames:
+        return []
+    return _existing_codes(wb["Captured Devices 01"])
+
+
+def _existing_codes(ws_cap: Any) -> list[str]:
+    codes: list[str] = []
+    row = 35
+    while True:
+        no_val = ws_cap.cell(row, 2).value
+        label = ws_cap.cell(row, 3).value
+        if not isinstance(no_val, (int, float)) or not isinstance(label, str) or not label.strip():
+            break
+        codes.append(label.strip().removeprefix("DP ").strip())
+        row += 10
+    return codes
+
+
 def build_workbook(
     template_src: Path | bytes,
     dp_results: dict[str, dict[str, Any]],
+    base_report: bytes | None = None,
 ) -> openpyxl.Workbook | None:
     """
-    Bangun objek Workbook openpyxl dari Path lokal atau raw bytes (st.secrets / upload UI):
-    - Baris 15 (No 1: OLT) & Baris 25 (No 2: RK) dikosongkan gambarnya (kotak tetap utuh).
-    - Daftar DP yang di-upload mulai dari Baris 35 (No 3), Baris 45 (No 4), Baris 55 (No 5), dst.
+    Bangun objek Workbook openpyxl dari Path lokal atau raw bytes (st.secrets / upload UI).
+    - Tanpa `base_report`: mulai dari template; baris 15 (No 1) & 25 (No 2) dikosongkan gambarnya,
+      DP dimulai dari Baris 35 (No 3), 45 (No 4), 55 (No 5), dst.
+    - Dengan `base_report` (xlsx hasil export sebelumnya): DP baru ditambahkan DI BAWAH DP yang sudah ada.
+      DP yang kodenya sudah ada di report lama dilewati.
+    Footer (Note/Authorization) di kedua sheet digeser otomatis sesuai jumlah DP.
     """
-    if isinstance(template_src, Path) and not template_src.is_file():
+    if base_report is None and isinstance(template_src, Path) and not template_src.is_file():
         print(f"[WARN] File template Excel tidak ditemukan: {template_src}")
         return None
 
-    logo_bytes = _extract_logo_bytes(template_src)
-    wb_input = BytesIO(template_src) if isinstance(template_src, (bytes, bytearray)) else template_src
-    wb = openpyxl.load_workbook(wb_input)
+    is_base = base_report is not None
+    if is_base:
+        wb = openpyxl.load_workbook(BytesIO(base_report))
+    else:
+        logo_bytes = _extract_logo_bytes(template_src)
+        wb_input = BytesIO(template_src) if isinstance(template_src, (bytes, bytearray)) else template_src
+        wb = openpyxl.load_workbook(wb_input)
 
-    for sname in wb.sheetnames:
-        ws_any = wb[sname]
-        b2_val = ws_any["B2"].value
-        if isinstance(b2_val, str) and "DISPIMG" in b2_val:
-            ws_any["B2"].value = None
-            if logo_bytes:
-                logo_img = XLImage(BytesIO(logo_bytes))
-                logo_img.width = 140
-                logo_img.height = 65
-                ws_any.add_image(logo_img, "B2")
+        for sname in wb.sheetnames:
+            ws_any = wb[sname]
+            b2_val = ws_any["B2"].value
+            if isinstance(b2_val, str) and "DISPIMG" in b2_val:
+                ws_any["B2"].value = None
+                if logo_bytes:
+                    logo_img = XLImage(BytesIO(logo_bytes))
+                    logo_img.width = 140
+                    logo_img.height = 65
+                    ws_any.add_image(logo_img, "B2")
 
     if "Captured Devices 01" not in wb.sheetnames:
-        print("[WARN] Sheet 'Captured Devices 01' tidak ditemukan di template.")
+        print("[WARN] Sheet 'Captured Devices 01' tidak ditemukan.")
         return None
 
     ws_cap = wb["Captured Devices 01"]
 
-    kept_images = []
-    for img in ws_cap._images:
-        anc = img.anchor
-        if hasattr(anc, "_from") and anc._from.row >= 12:
-            continue
-        kept_images.append(img)
-    ws_cap._images = kept_images
+    if is_base:
+        existing_codes = _existing_codes(ws_cap)
+    else:
+        existing_codes = []
+        kept_images = []
+        for img in ws_cap._images:
+            anc = img.anchor
+            if hasattr(anc, "_from") and anc._from.row >= 12:
+                continue
+            kept_images.append(img)
+        ws_cap._images = kept_images
 
-    ws_cap.cell(15, 3).value = None
-    ws_cap.cell(25, 3).value = None
+        ws_cap.cell(15, 3).value = None
+        ws_cap.cell(25, 3).value = None
 
-    for old_base in (35, 45, 55):
-        ws_cap.cell(old_base, 2).value = None
-        ws_cap.cell(old_base, 3).value = None
+        for old_base in (35, 45, 55):
+            ws_cap.cell(old_base, 2).value = None
+            ws_cap.cell(old_base, 3).value = None
 
-    sorted_dp_codes = sorted(dp_results.keys())
+    new_codes = [c for c in sorted(dp_results.keys()) if c not in set(existing_codes)]
+    n_old = len(existing_codes)
+    n_total = n_old + len(new_codes)
 
-    extra_blocks = max(0, len(sorted_dp_codes) - 3)
-    if extra_blocks:
-        _shift_footer_down(ws_cap, 65, extra_blocks * 10)
+    extra_old = max(0, n_old - 3)
+    extra_new = max(0, n_total - 3)
+    if extra_new > extra_old:
+        _shift_footer_down(ws_cap, 65 + extra_old * 10, (extra_new - extra_old) * 10)
 
-    for idx, dp_code in enumerate(sorted_dp_codes):
+    for offset, dp_code in enumerate(new_codes):
+        idx = n_old + offset
         base_row = 35 + (idx * 10)
         if base_row > 55:
             _copy_dp_block_style(ws_cap, 35, base_row)
@@ -206,13 +244,26 @@ def build_workbook(
 
     if "Form Measurement" in wb.sheetnames:
         ws_meas = wb["Form Measurement"]
-        for clear_r in range(29, 35):
-            ws_meas.cell(clear_r, 11).value = None
-            ws_meas.cell(clear_r, 14).value = None
-            ws_meas.cell(clear_r, 15).value = None
+        meas_first, meas_last_sample = 29, 34
+        if not is_base:
+            for clear_r in range(meas_first, meas_last_sample + 1):
+                ws_meas.cell(clear_r, 11).value = None
+                ws_meas.cell(clear_r, 14).value = None
+                ws_meas.cell(clear_r, 15).value = None
 
-        for idx, dp_code in enumerate(sorted_dp_codes):
-            row_m = 29 + idx
+        meas_extra_old = max(0, n_old - 6)
+        meas_extra_new = max(0, n_total - 6)
+        if meas_extra_new > meas_extra_old:
+            _shift_footer_down(ws_meas, 35 + meas_extra_old, meas_extra_new - meas_extra_old)
+
+        max_col_meas = ws_meas.max_column
+        for offset, dp_code in enumerate(new_codes):
+            idx = n_old + offset
+            row_m = meas_first + idx
+            if idx >= 6:
+                for c in range(1, max_col_meas + 1):
+                    ws_meas.cell(row_m, c)._style = copy(ws_meas.cell(meas_last_sample, c)._style)
+                ws_meas.row_dimensions[row_m].height = ws_meas.row_dimensions[meas_last_sample].height
             ws_meas.cell(row_m, 2).value = idx + 1
             ws_meas.cell(row_m, 11).value = dp_code
             if in_dbm := dp_results[dp_code].get("input_dbm"):
@@ -240,9 +291,10 @@ def export_to_excel(
 def export_to_excel_bytes(
     template_src: Path | bytes,
     dp_results: dict[str, dict[str, Any]],
+    base_report: bytes | None = None,
 ) -> bytes | None:
     """Kembalikan byte stream file .xlsx untuk di-download langsung lewat Web UI."""
-    wb = build_workbook(template_src, dp_results)
+    wb = build_workbook(template_src, dp_results, base_report)
     if wb is None:
         return None
     buf = BytesIO()

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 import zipfile
 import streamlit as st
-from src.exporter import export_to_excel_bytes
+from src.exporter import export_to_excel_bytes, read_existing_dp_codes
 from src.scanner import DEFAULT_NUMBER_MAP, extract_dp_code_from_path, extract_number_slot
 
 BASE_DIR = Path(__file__).parent
@@ -133,8 +133,15 @@ def store_signature(dp_results: dict[str, dict[str, Any]]) -> tuple:
 
 
 @st.cache_data(show_spinner="Menyusun Excel...", max_entries=2)
-def cached_excel(_template: Path | bytes, tpl_key: str, sig: tuple, _dp_results: dict) -> bytes:
-    return export_to_excel_bytes(_template, _dp_results)
+def cached_excel(
+    _template: Path | bytes, tpl_key: str, sig: tuple, _dp_results: dict, _base: bytes | None, base_key: int
+) -> bytes:
+    return export_to_excel_bytes(_template, _dp_results, _base)
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def cached_existing_codes(report_bytes: bytes) -> list[str]:
+    return read_existing_dp_codes(report_bytes)
 
 
 @st.cache_data(show_spinner=False, max_entries=2)
@@ -143,7 +150,7 @@ def cached_renamed_zip(sig: tuple, _dp_results: dict) -> bytes:
 
 
 @st.cache_data(show_spinner=False, max_entries=2)
-def cached_bundle_zip(sig: tuple, tpl_key: str, _dp_results: dict, _excel: bytes) -> bytes:
+def cached_bundle_zip(sig: tuple, tpl_key: str, _dp_results: dict, _excel: bytes, excel_key: int) -> bytes:
     return build_complete_bundle_zip(_dp_results, _excel)
 
 
@@ -514,6 +521,30 @@ seq = st.session_state["uploader_seq"]
 if st.session_state["last_added_msg"]:
     st.success(st.session_state["last_added_msg"])
 
+with st.expander("Lanjutkan dari Report Sebelumnya (opsional) — DP baru ditambahkan di bawah DP lama"):
+    base_up = st.file_uploader(
+        "Upload file .xlsx hasil export ARGex sebelumnya",
+        type=["xlsx"],
+        key="base_report_uploader",
+        help="Dipakai untuk membuat report besar secara bertahap: export batch 1, lalu upload hasilnya di sini bersama batch 2.",
+    )
+    if base_up is not None:
+        st.session_state["base_report_bytes"] = base_up.getvalue()
+    base_report_bytes: bytes | None = st.session_state.get("base_report_bytes")
+    if base_report_bytes:
+        try:
+            base_codes = cached_existing_codes(base_report_bytes)
+            st.info(f"Report lama berisi {len(base_codes)} DP. DP baru akan mulai dari No {len(base_codes) + 3}.")
+        except Exception as exc:
+            st.error(f"Report lama tidak bisa dibaca: {type(exc).__name__}. Hapus file lalu upload ulang.")
+            base_report_bytes = None
+            base_codes = []
+        if st.button("Lepas Report Lama"):
+            st.session_state["base_report_bytes"] = None
+            st.rerun()
+    else:
+        base_codes = []
+
 tab_folder, tab_zip, tab_direct = st.tabs(
     [
         "Tambah Folder DP (Tanpa ZIP)",
@@ -756,10 +787,28 @@ else:
     sig = store_signature(dp_store)
     tpl_key = str(template_src) if isinstance(template_src, Path) else f"bytes:{len(template_src or b'')}"
     renamed_zip_bytes = safe_build("ZIP foto", cached_renamed_zip, sig, dp_store) or b""
-    excel_bytes = safe_build("Excel", cached_excel, template_src, tpl_key, sig, dp_store) if template_src else None
+    dup_codes = sorted(set(dp_store) & set(base_codes))
+    if dup_codes:
+        st.warning(
+            f"DP berikut sudah ada di report lama dan DILEWATI (tidak ditulis ulang): {', '.join(dup_codes)}"
+        )
+    excel_bytes = (
+        safe_build(
+            "Excel",
+            cached_excel,
+            template_src,
+            tpl_key,
+            sig,
+            dp_store,
+            base_report_bytes,
+            len(base_report_bytes or b""),
+        )
+        if (template_src or base_report_bytes)
+        else None
+    )
 
     if excel_bytes:
-        bundle_zip_bytes = safe_build("ZIP paket lengkap", cached_bundle_zip, sig, tpl_key, dp_store, excel_bytes) or b""
+        bundle_zip_bytes = safe_build("ZIP paket lengkap", cached_bundle_zip, sig, tpl_key, dp_store, excel_bytes, len(excel_bytes)) or b""
         btn_col1, btn_col2, btn_col3 = st.columns(3)
         with btn_col1:
             st.download_button(
