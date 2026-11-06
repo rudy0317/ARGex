@@ -9,6 +9,7 @@ font = "sans serif"
 
 [client]
 toolbarMode = "minimal"
+showErrorDetails = "full"
 
 [server]
 enableXsrfProtection = true
