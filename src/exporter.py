@@ -79,6 +79,40 @@ def _copy_dp_block_style(ws: Any, src_base_row: int, dst_base_row: int) -> None:
             ws.merge_cells(m_range)
 
 
+def _shift_footer_down(ws: Any, first_row: int, shift: int) -> None:
+    """
+    Geser footer template (Note / Authorization, mulai baris `first_row`) ke bawah sebanyak `shift` baris
+    supaya DP ke-4 dst. punya ruang dan tidak menabrak merged cell footer.
+    """
+    footer_merges = [
+        (r.min_col, r.min_row, r.max_col, r.max_row)
+        for r in list(ws.merged_cells.ranges)
+        if r.min_row >= first_row
+    ]
+    for min_col, min_row, max_col, max_row in footer_merges:
+        ws.unmerge_cells(start_row=min_row, start_column=min_col, end_row=max_row, end_column=max_col)
+
+    last_row = ws.max_row
+    max_col_idx = ws.max_column
+    for r in range(last_row, first_row - 1, -1):
+        ws.row_dimensions[r + shift].height = ws.row_dimensions[r].height
+        for c in range(1, max_col_idx + 1):
+            src = ws.cell(r, c)
+            dst = ws.cell(r + shift, c)
+            dst.value = src.value
+            dst._style = copy(src._style)
+            src.value = None
+            src._style = copy(ws.cell(1, max_col_idx + 5)._style)
+
+    for min_col, min_row, max_col, max_row in footer_merges:
+        ws.merge_cells(
+            start_row=min_row + shift,
+            start_column=min_col,
+            end_row=max_row + shift,
+            end_column=max_col,
+        )
+
+
 def build_workbook(
     template_src: Path | bytes,
     dp_results: dict[str, dict[str, Any]],
@@ -129,6 +163,10 @@ def build_workbook(
         ws_cap.cell(old_base, 3).value = None
 
     sorted_dp_codes = sorted(dp_results.keys())
+
+    extra_blocks = max(0, len(sorted_dp_codes) - 3)
+    if extra_blocks:
+        _shift_footer_down(ws_cap, 65, extra_blocks * 10)
 
     for idx, dp_code in enumerate(sorted_dp_codes):
         base_row = 35 + (idx * 10)
