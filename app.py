@@ -1,4 +1,5 @@
 import base64
+import logging
 from io import BytesIO
 import json
 from pathlib import Path
@@ -83,6 +84,43 @@ def build_complete_bundle_zip(dp_results: dict[str, dict[str, Any]], excel_bytes
                 ext = exts.get(category, ".jpg")
                 zout.writestr(f"foto_renamed/{dp_code}/{category}{ext}", raw_bytes)
     return buf.getvalue()
+
+
+MAX_PHOTO_PX = 1600
+JPEG_QUALITY = 85
+
+
+def compress_photo(raw: bytes, ext: str) -> tuple[bytes, str]:
+    """
+    Perkecil foto saat ingest (maks MAX_PHOTO_PX, JPEG q85) supaya memori Streamlit Cloud (~1 GB)
+    tidak habis saat banyak DP. Jika gagal diproses, foto asli dipakai apa adanya.
+    """
+    try:
+        from PIL import Image, ImageOps
+
+        with Image.open(BytesIO(raw)) as im:
+            im = ImageOps.exif_transpose(im)
+            im.thumbnail((MAX_PHOTO_PX, MAX_PHOTO_PX))
+            out = BytesIO()
+            im.convert("RGB").save(out, format="JPEG", quality=JPEG_QUALITY, optimize=True)
+        data = out.getvalue()
+        return (data, ".jpg") if len(data) < len(raw) or ext.lower() == ".png" else (raw, ext)
+    except Exception:
+        logging.exception("compress_photo gagal, pakai file asli")
+        return raw, ext
+
+
+def safe_build(label: str, fn: Any, *args: Any) -> Any:
+    """Jalankan builder (Excel/ZIP); jika gagal tampilkan pesan ramah, bukan crash seluruh halaman."""
+    try:
+        return fn(*args)
+    except Exception as exc:
+        logging.exception("Gagal membangun %s", label)
+        st.error(
+            f"Gagal membuat {label}: {type(exc).__name__}: {exc}. "
+            "Coba kurangi jumlah DP / ukuran foto, lalu muat ulang halaman."
+        )
+        return None
 
 
 def store_signature(dp_results: dict[str, dict[str, Any]]) -> tuple:
@@ -515,8 +553,9 @@ with tab_folder:
                     "filenames": {},
                 }
 
-            dp_store[loc_code]["photos"][category] = uf.getvalue()
-            dp_store[loc_code]["exts"][category] = p.suffix
+            photo_bytes, photo_ext = compress_photo(uf.getvalue(), p.suffix)
+            dp_store[loc_code]["photos"][category] = photo_bytes
+            dp_store[loc_code]["exts"][category] = photo_ext
             dp_store[loc_code]["filenames"][category] = p.name
             added_dps.add(loc_code)
 
@@ -566,8 +605,9 @@ with tab_zip:
                         "filenames": {},
                     }
 
-                dp_store[loc_code]["photos"][category] = zf.read(member)
-                dp_store[loc_code]["exts"][category] = p.suffix
+                photo_bytes, photo_ext = compress_photo(zf.read(member), p.suffix)
+                dp_store[loc_code]["photos"][category] = photo_bytes
+                dp_store[loc_code]["exts"][category] = photo_ext
                 dp_store[loc_code]["filenames"][category] = p.name
                 added_dps.add(loc_code)
 
@@ -607,8 +647,9 @@ with tab_direct:
                 skipped_now.append(f"{manual_dp_code}/{uf.name}")
                 continue
             category = number_map[slot_num]
-            dp_store[manual_dp_code]["photos"][category] = uf.getvalue()
-            dp_store[manual_dp_code]["exts"][category] = p.suffix
+            photo_bytes, photo_ext = compress_photo(uf.getvalue(), p.suffix)
+            dp_store[manual_dp_code]["photos"][category] = photo_bytes
+            dp_store[manual_dp_code]["exts"][category] = photo_ext
             dp_store[manual_dp_code]["filenames"][category] = p.name
 
         st.session_state["last_skipped"] = skipped_now
@@ -714,11 +755,11 @@ else:
 
     sig = store_signature(dp_store)
     tpl_key = str(template_src) if isinstance(template_src, Path) else f"bytes:{len(template_src or b'')}"
-    renamed_zip_bytes = cached_renamed_zip(sig, dp_store)
-    excel_bytes = cached_excel(template_src, tpl_key, sig, dp_store) if template_src else None
+    renamed_zip_bytes = safe_build("ZIP foto", cached_renamed_zip, sig, dp_store) or b""
+    excel_bytes = safe_build("Excel", cached_excel, template_src, tpl_key, sig, dp_store) if template_src else None
 
     if excel_bytes:
-        bundle_zip_bytes = cached_bundle_zip(sig, tpl_key, dp_store, excel_bytes)
+        bundle_zip_bytes = safe_build("ZIP paket lengkap", cached_bundle_zip, sig, tpl_key, dp_store, excel_bytes) or b""
         btn_col1, btn_col2, btn_col3 = st.columns(3)
         with btn_col1:
             st.download_button(
